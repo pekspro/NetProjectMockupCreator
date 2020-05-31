@@ -212,34 +212,51 @@ dotnet build {buildNugetProjectName} | Out-Null
             }
 
 filecontent += @$"
+
+[double[]] $testBestValues = @()
+[string[]] $testTitles = @()
+
+[double[]] $temp = @()
 Write-Output ''
-
-
 for($i = 1; $i -le 3; $i++)
 {{
     $sw = [System.Diagnostics.Stopwatch]::startNew()
 
     Write-Output 'Rebuilding... ($i)'
     dotnet build {buildProjectName} --no-incremental | Out-Null
+    $sw.Stop()
 
     Write-Output 'Rebuilding time: $($sw.Elapsed.TotalSeconds) seconds'
+    $temp += $sw.Elapsed.TotalSeconds
 }}
 
+$testTitles  += 'Rebuild time'
+$testBestValues += ($temp | Measure-Object -Minimum).Minimum
 
-for($i = 1; $i -le 3; $i++)
+
+[double[]] $temp = @()
+Write-Output ''
+for ($i = 1; $i -le 3; $i++)
 {{
     $sw = [System.Diagnostics.Stopwatch]::startNew()
 
     Write-Output 'Building without changes... ($i)'
     dotnet build {buildProjectName} --project Main | Out-Null
+    $sw.Stop()
 
     Write-Output 'Building time: $($sw.Elapsed.TotalSeconds) seconds'
+    $temp += $sw.Elapsed.TotalSeconds
 }}
+
+$testTitles  += 'Build without changes'
+$testBestValues += ($temp | Measure-Object -Minimum).Minimum
 
 
 $filesToEdit = {CreateEditFileList(main)}
 for($level = 0; $level -lt $filesToEdit.Count; $level++)
 {{
+    [double[]] $temp = @()
+    Write-Output ''
     for($i = 1; $i -le 3; $i++)
     {{
         Add-Content -Path $filesToEdit[$level] -Value '// Added by benchmark.ps1'
@@ -248,21 +265,36 @@ for($level = 0; $level -lt $filesToEdit.Count; $level++)
     
         Write-Output 'Changing file on level ($level) and building... ($i)'
         dotnet build {buildProjectName} | Out-Null
+        $sw.Stop()
     
         Write-Output 'Building time: $($sw.Elapsed.TotalSeconds) seconds'
+        $temp += $sw.Elapsed.TotalSeconds
     }} 
+
+    $testTitles  += 'Changing file on level ($level)'
+    $testBestValues += ($temp | Measure-Object -Minimum).Minimum
 }}
 
 
+# [double[]] $temp = @()
+# Write-Output ''
 # for($i = 1; $i -le 3; $i++)
 # {{
 #     $sw = [System.Diagnostics.Stopwatch]::startNew()
 # 
 #     Write-Output 'Running... ($i)'
 #     dotnet run {buildProjectName} --project Main | Out-Null
+#     $sw.Stop()
 # 
 #     Write-Output 'Running time: $($sw.Elapsed.TotalSeconds) seconds'
 # }}
+
+Write-Output ''
+Write-Output 'Best results:'
+
+for ($i = 0; $i -lt $testTitles.Length; $i++) {{
+    Write-Output '$($testTitles[$i]): $($testBestValues[$i])'
+}}
 
 ".Replace("'", "\"");
 
