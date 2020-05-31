@@ -14,8 +14,8 @@ namespace NetProjectMockupCreator
     {
         static Task<int> Main(string[] args)
         {
-            //args = $"--name fakeproject{DateTime.Now:HHmmss} --level-sizes 1 3 4 --path e:\\temp --line-count 6 --file-count 10 --force".Split(' ');
-            //args = $"--name fakeproject{DateTime.Now:HHmmss} --level-sizes 1 3 4 --path e:\\temp --line-count 6 --file-count 10".Split(' ');
+            // args = $"--name fakeproject{DateTime.Now:HHmmss} --level-sizes 1 2 3 --path r:\\temp --line-count 6 --file-count 10 --nuget-level 3 --force".Split(' ');
+            // args = $"--name fakeproject{DateTime.Now:HHmmss} --level-sizes 1 3 4 --path e:\\temp --line-count 6 --file-count 10".Split(' ');
 
             var nameOption = new Option<string>(
                 "--name",
@@ -62,6 +62,11 @@ namespace NetProjectMockupCreator
                 getDefaultValue: () => 50,
                 description: "Number of files in each project.");
 
+            var nugetOption = new Option<int>(
+                "--nuget-level",
+                getDefaultValue: () => int.MaxValue,
+                description: "From wich level projects will be nuget packages.");
+
             var forceOption = new Option<bool>(
                 "--force",
                 description: "Create without verification.");
@@ -75,6 +80,7 @@ namespace NetProjectMockupCreator
                 pathOption,
                 linesOption,
                 fileCountOption,
+                nugetOption,
                 forceOption
             };
 
@@ -82,9 +88,9 @@ namespace NetProjectMockupCreator
 
 
             // Note that the parameters of the handler method are matched according to the names of the options
-            rootCommand.Handler = CommandHandler.Create<string, FileInfo, int[], int, int, bool>(async (name, path, levelSizes, fileCount, lineCount, force) =>
+            rootCommand.Handler = CommandHandler.Create<string, FileInfo, int[], int, int, int, bool>(async (name, path, levelSizes, fileCount, lineCount, nugetLevel, force) =>
             {
-                Project main = CreateProjectStructure(true, "", 1, levelSizes.ToList(), fileCount, lineCount);
+                Project main = CreateProjectStructure(true, "", 1, levelSizes.ToList(), fileCount, lineCount, nugetLevel);
 
                 Console.WriteLine();
                 Console.WriteLine();
@@ -93,6 +99,10 @@ namespace NetProjectMockupCreator
                 Console.WriteLine($"Total number of projects: {main.TotalNumberOfSubProjects}");
                 Console.WriteLine($"Total number of files: {main.TotalNumberOfSubProjectSourceFiles}");
                 Console.WriteLine($"Total number of lines of code: {main.TotalNumberOfLinesOfCode}");
+                if(nugetLevel >= 0 && nugetLevel < int.MaxValue)
+                {
+                    Console.WriteLine($"Projects from level {nugetLevel} will be nuget packages.");
+                }
 
                 if(!force)
                 {
@@ -115,7 +125,7 @@ namespace NetProjectMockupCreator
             return rootCommand.InvokeAsync(args);
         }
 
-        private static Project CreateProjectStructure(bool isMain, string prefix, int projectId, List<int> projectsPerLevel, int numberOfSourceFiles, int numberOfLinesOfCode)
+        private static Project CreateProjectStructure(bool isMain, string prefix, int projectId, List<int> projectsPerLevel, int numberOfSourceFiles, int numberOfLinesOfCode, int levelsLeftUntilNugetPackage)
         {
             string projectName = "Main";
             if(!isMain)
@@ -129,34 +139,42 @@ namespace NetProjectMockupCreator
                 IsMain = isMain,
                 Name = projectName,
                 NumberOfFiles = isMain ? 1 : numberOfSourceFiles,
-                NumberOfLinesOfCode = isMain ? 0 : numberOfLinesOfCode
+                NumberOfLinesOfCode = isMain ? 0 : numberOfLinesOfCode,
+                IsNugetPackage = levelsLeftUntilNugetPackage <= 0
             };
 
             if(projectsPerLevel.Any())
             {
                 for(int s = 0; s < projectsPerLevel.First(); s++)
                 {
-                    p.SubProject.Add(CreateProjectStructure(false, isMain ? "" : projectName, s, projectsPerLevel.Skip(1).ToList(), numberOfSourceFiles, numberOfLinesOfCode));
+                    p.SubProject.Add(CreateProjectStructure(false, isMain ? "" : projectName, s, projectsPerLevel.Skip(1).ToList(), numberOfSourceFiles, numberOfLinesOfCode, levelsLeftUntilNugetPackage - 1));
                 }
             }
 
             return p;
         }
 
-        private static async Task WriteAllAsync(Project main, string path, string projectname)
+        private static async Task WriteAllAsync(Project main, string path, string solutionName)
         {
-            path = Path.Combine(path, projectname);
+            path = Path.Combine(path, solutionName);
 
             Directory.CreateDirectory(path);
 
-            await WriteSolutionFileAsync(main, path, projectname);
+            await WriteSolutionFileAsync(main, path, solutionName, false);
 
-            await WriteProjectsAsync(main, path, projectname);
+            if(main.SomeHasNugetPackage)
+            {
+                await WriteSolutionFileAsync(main, path, solutionName, true);
+            }
 
-            await WriteBenchmarkFileAsync(path, main);
+            await WriteProjectsAsync(main, path, solutionName, solutionName);
+
+            await WriteNugetPackageConfigurationAsync(main, path);
+
+            await WriteBenchmarkFileAsync(path, main, solutionName);
         }
 
-        private static async Task WriteBenchmarkFileAsync(string path, Project main)
+        private static async Task WriteBenchmarkFileAsync(string path, Project main, string solutionName)
         {
             string CreateEditFileList(Project proj)
             {
@@ -166,6 +184,11 @@ namespace NetProjectMockupCreator
                 {
                     proj = proj.SubProject[0];
 
+                    if(proj.IsNugetPackage)
+                    {
+                        break;
+                    }
+
                     s += $", './{proj.Name}/LibClass0001.cs'";
                 }
 
@@ -173,9 +196,22 @@ namespace NetProjectMockupCreator
             }
 
             string benchmarkFilename = Path.Combine(path, "benchmark.ps1");
+            string buildProjectName = $"./{solutionName}.sln";
+            string buildNugetProjectName = $"./{solutionName}-nuget.sln";
 
-            string filecontent =
-@$"Write-Output '{main.TotalNumberOfSubProjects} projects with {main.TotalNumberOfSubProjectSourceFiles} source files with {main.TotalNumberOfLinesOfCode} lines of code.'
+            string filecontent = @$"Write-Output '{main.TotalNumberOfSubProjects} projects with {main.TotalNumberOfSubProjectSourceFiles} source files with {main.TotalNumberOfLinesOfCode} lines of code.'";
+
+            if(main.TotalNumberOfNugetProjects > 0)
+            {
+                filecontent += @$"
+Write-Output '{main.TotalNumberOfNugetProjects} projects are NuGet packages and will not be benchmarked.'
+Write-Output 'Building NuGet packages projects...'
+
+dotnet build {buildNugetProjectName} | Out-Null
+";
+            }
+
+filecontent += @$"
 Write-Output ''
 
 
@@ -184,7 +220,7 @@ for($i = 1; $i -le 3; $i++)
     $sw = [System.Diagnostics.Stopwatch]::startNew()
 
     Write-Output 'Rebuilding... ($i)'
-    dotnet build --no-incremental | Out-Null
+    dotnet build {buildProjectName} --no-incremental | Out-Null
 
     Write-Output 'Rebuilding time: $($sw.Elapsed.TotalSeconds) seconds'
 }}
@@ -195,7 +231,7 @@ for($i = 1; $i -le 3; $i++)
     $sw = [System.Diagnostics.Stopwatch]::startNew()
 
     Write-Output 'Building without changes... ($i)'
-    dotnet run --project Main | Out-Null
+    dotnet build {buildProjectName} --project Main | Out-Null
 
     Write-Output 'Building time: $($sw.Elapsed.TotalSeconds) seconds'
 }}
@@ -211,55 +247,96 @@ for($level = 0; $level -lt $filesToEdit.Count; $level++)
         $sw = [System.Diagnostics.Stopwatch]::startNew()
     
         Write-Output 'Changing file on level ($level) and building... ($i)'
-        dotnet build | Out-Null
+        dotnet build {buildProjectName} | Out-Null
     
         Write-Output 'Building time: $($sw.Elapsed.TotalSeconds) seconds'
     }} 
 }}
 
 
-for($i = 1; $i -le 3; $i++)
-{{
-    $sw = [System.Diagnostics.Stopwatch]::startNew()
-
-    Write-Output 'Running... ($i)'
-    dotnet run --project Main | Out-Null
-
-    Write-Output 'Running time: $($sw.Elapsed.TotalSeconds) seconds'
-}}
+# for($i = 1; $i -le 3; $i++)
+# {{
+#     $sw = [System.Diagnostics.Stopwatch]::startNew()
+# 
+#     Write-Output 'Running... ($i)'
+#     dotnet run {buildProjectName} --project Main | Out-Null
+# 
+#     Write-Output 'Running time: $($sw.Elapsed.TotalSeconds) seconds'
+# }}
 
 ".Replace("'", "\"");
 
             await File.WriteAllTextAsync(benchmarkFilename, filecontent, Encoding.UTF8);
         }
 
-        private static async Task WriteSolutionFileAsync(Project main, string path, string projectname)
+        private static async Task WriteNugetPackageConfigurationAsync(Project main, string path)
+        {
+            if(!main.SomeHasNugetPackage)
+            {
+                return;
+            }
+
+            string packageDir = Path.Combine(path, "LocalPackages");
+            Directory.CreateDirectory(packageDir);
+
+            string solutionFilename = Path.Combine(path, "nuget.config");
+
+            string filecontent = @"<?xml version='1.0' encoding='utf-8'?>
+  <configuration>
+    <packageSources>
+      <add key='LocalPackages' value='./LocalPackages' />
+    </packageSources>
+    <activePackageSource>
+      <!-- this tells that all of them are active -->
+      <add key='All' value='(Aggregate source)' />
+    </activePackageSource>
+ </configuration>
+".Replace("'", "\"");
+
+            await File.WriteAllTextAsync(solutionFilename, filecontent, Encoding.UTF8);
+        }
+
+        private static async Task WriteSolutionFileAsync(Project main, string path, string solutionname, bool nugetPackages)
         {
             Guid superId = Guid.NewGuid();
 
             void AddProjects(Project project, StringBuilder sb)
             {
-                sb.Append(
-@$"Project('{{{superId}}}') = '{project.Name}', '{project.Name}\{project.Name}.csproj', '{{{project.ID}}}'
-EndProject
-".Replace("'", "\"")
-);
+                if(project.IsNugetPackage == nugetPackages)
+                {
+                    sb.AppendLine(@$"Project('{{{superId.ToString().ToUpper()}}}') = '{project.Name}', '{project.Name}\{project.Name}.csproj', '{{{project.ID.ToString().ToUpper()}}}'".Replace("'", "\""));
+                    if(project.IsNugetPackage && project.SubProject.Any())
+                    {
+                        sb.AppendLine("\tProjectSection(ProjectDependencies) = postProject");
+                        foreach(var subproject in project.SubProject)
+                        {
+                            sb.AppendLine($"\t\t{{{subproject.ID.ToString().ToUpper()}}} = {{{subproject.ID.ToString().ToUpper()}}}");
+                        }
+                        sb.AppendLine("\tEndProjectSection");
+                    }
+
+                    sb.AppendLine(@$"EndProject");
+                }
+
                 foreach(var p in project.SubProject)
                 {
                     AddProjects(p, sb);
                 }
-
             }
 
             void AddProjectsBuildTypes(Project project, StringBuilder sb)
             {
-                sb.Append(
-@$"		{{{project.ID}}}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{{{project.ID}}}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{{{project.ID}}}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{{{project.ID}}}.Release|Any CPU.Build.0 = Release|Any CPU
+                if(project.IsNugetPackage == nugetPackages)
+                {
+                    sb.Append(
+@$"		{{{project.ID.ToString().ToUpper()}}}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{{{project.ID.ToString().ToUpper()}}}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{{{project.ID.ToString().ToUpper()}}}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{{{project.ID.ToString().ToUpper()}}}.Release|Any CPU.Build.0 = Release|Any CPU
 ".Replace("'", "\"")
-);
+    );
+                }
+
                 foreach (var p in project.SubProject)
                 {
                     AddProjectsBuildTypes(p, sb);
@@ -267,20 +344,19 @@ EndProject
 
             }
 
-            string solutionFilename = Path.Combine(path, projectname + ".sln");
+            string solutionFilename = Path.Combine(path, solutionname + (nugetPackages ? "-nuget" : "") +".sln");
 
             string filecontent = @"Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 16
 VisualStudioVersion = 16.0.30114.105
 MinimumVisualStudioVersion = 10.0.40219.1
-{0}    Global
+{0}Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
 		Release|Any CPU = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
-{1}   EndGlobalSection
-
+{1}    EndGlobalSection
 EndGlobal
 ";
 
@@ -294,7 +370,7 @@ EndGlobal
         }
 
 
-        private static async Task WriteProjectsAsync(Project project, string basePath, string namespacePrefix)
+        private static async Task WriteProjectsAsync(Project project, string basePath, string namespacePrefix, string solutionName)
         {
             string projectPath = Path.Combine(basePath, project.Name);
 
@@ -302,7 +378,7 @@ EndGlobal
 
             string projectFileName = Path.Combine(projectPath, project.Name + ".csproj");
 
-            await WriteProjectFileAsync(project, projectFileName);
+            await WriteProjectFileAsync(project, projectFileName, solutionName);
 
             for (int i = 0; i < project.NumberOfFiles; i++)
             {
@@ -311,7 +387,7 @@ EndGlobal
 
             foreach (var p in project.SubProject)
             {
-                await WriteProjectsAsync(p, basePath, namespacePrefix + "." + p.Name);
+                await WriteProjectsAsync(p, basePath, namespacePrefix + "." + p.Name, solutionName);
             }
 
             
@@ -358,7 +434,7 @@ EndGlobal
 
             for(int i = 0; i < numberOfLinesOfCode; i++)
             {
-                sb.AppendLine("            sb.Append((char) (48 + random.Next(0, 10)));");
+                sb.AppendLine("            sb.Append((char) ('0' + random.Next(0, 10)));");
             }
 
             int minSubProjectId = id;
@@ -394,14 +470,14 @@ EndGlobal
             await File.WriteAllTextAsync(sourceFileName, sb.ToString(), Encoding.UTF8);
         }
 
-        private static async Task WriteProjectFileAsync(Project main, string projectFileName)
+        private static async Task WriteProjectFileAsync(Project project, string projectFileName, string solutionName)
         {
             StringBuilder sb = new StringBuilder();
             sb.AppendLine("<Project Sdk='Microsoft.NET.Sdk'>");
             sb.AppendLine("");
             sb.AppendLine("  <PropertyGroup>");
 
-            if(main.IsMain)
+            if(project.IsMain)
             {
                 sb.AppendLine("    <OutputType>Exe</OutputType>");
                 sb.AppendLine("    <TargetFramework>netcoreapp2.1</TargetFramework>");
@@ -409,20 +485,39 @@ EndGlobal
             else
             {
                 sb.AppendLine("    <TargetFramework>netstandard2.0</TargetFramework>");
+                if(project.IsNugetPackage)
+                {
+                    sb.AppendLine($"    <PackageId>{solutionName}.{project.Name}</PackageId>");
+                }
             }
 
             sb.AppendLine("  </PropertyGroup>");
-
-            if(main.SubProject.Any())
+                        
+            if(project.SubProject.Any())
             {
 
                 sb.AppendLine("");
                 sb.AppendLine("  <ItemGroup>");
-                foreach(var subProject in main.SubProject)
+                foreach(var subProject in project.SubProject)
                 {
-                    sb.AppendLine($@"    <ProjectReference Include='..\{subProject.Name}\{subProject.Name}.csproj' />");
+                    if(subProject.IsNugetPackage)
+                    {
+                        sb.AppendLine($@"    <PackageReference Include='{solutionName}.{subProject.Name}' Version='1.0.0' />");
+                    }
+                    else
+                    {
+                        sb.AppendLine($@"    <ProjectReference Include='..\{subProject.Name}\{subProject.Name}.csproj' />");
+                    }
                 }
                 sb.AppendLine("  </ItemGroup>");
+            }
+
+            if (!project.IsMain && project.IsNugetPackage)
+            {
+                sb.AppendLine();
+                sb.AppendLine("  <Target Name=\"PostBuild\" AfterTargets=\"PostBuildEvent\">");
+                sb.AppendLine("    <Exec Command=\"dotnet pack &quot;$(ProjectPath) &quot; --no-build --include-source --include-symbols --output $(ProjectDir)../LocalPackages\" />");
+                sb.AppendLine("  </Target>");
             }
 
             sb.AppendLine("");
@@ -446,6 +541,24 @@ EndGlobal
 
         public List<Project> SubProject { get; set; } = new List<Project>();
 
+        public bool IsNugetPackage { get; internal set; }
+
+        public bool SomeHasNugetPackage
+        {
+            get
+            {
+                return IsNugetPackage || SubProject.Any(a => a.SomeHasNugetPackage);
+            }
+        }
+
+        public int TotalNumberOfNugetProjects
+        {
+            get
+            {
+                return (IsNugetPackage ? 1 : 0) + SubProject.Sum(a => a.TotalNumberOfNugetProjects);
+            }
+        }
+
         public int TotalNumberOfSubProjects
         {
             get
@@ -468,6 +581,6 @@ EndGlobal
             {
                 return SubProject.Sum(a => a.NumberOfLinesOfCode * a.NumberOfFiles) + SubProject.Sum(a => a.TotalNumberOfLinesOfCode);
             }
-        }
+        }       
     }
 }
