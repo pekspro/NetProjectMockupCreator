@@ -36,3 +36,9 @@ NuGet packages.
 ## Benchmarking
 
 You can use the auto generated file `benchmark.ps1` to automatically test how long it takes to build and rebuild your project.
+
+## Read more
+
+This tool was created during writing of [this blog
+post](https://devblog.pekspro.com/posts/build-time) that is exploring different
+scenarios and provides benchmarking.
