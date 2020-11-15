@@ -208,6 +208,7 @@ Write-Output '{main.TotalNumberOfNugetProjects} projects are NuGet packages and 
 Write-Output 'Building NuGet packages projects...'
 
 dotnet build {buildNugetProjectName} | Out-Null
+dotnet pack {buildNugetProjectName} --no-build --include-source --include-symbols --output LocalPackages
 ";
             }
 
@@ -520,6 +521,7 @@ EndGlobal
                 if(project.IsNugetPackage)
                 {
                     sb.AppendLine($"    <PackageId>{solutionName}.{project.Name}</PackageId>");
+                    sb.AppendLine($"    <Version>1.0.0</Version>");
                 }
             }
 
@@ -542,14 +544,6 @@ EndGlobal
                     }
                 }
                 sb.AppendLine("  </ItemGroup>");
-            }
-
-            if (!project.IsMain && project.IsNugetPackage)
-            {
-                sb.AppendLine();
-                sb.AppendLine("  <Target Name=\"PostBuild\" AfterTargets=\"PostBuildEvent\">");
-                sb.AppendLine("    <Exec Command=\"dotnet pack &quot;$(ProjectPath) &quot; --no-build --include-source --include-symbols --output $(ProjectDir)../LocalPackages\" />");
-                sb.AppendLine("  </Target>");
             }
 
             sb.AppendLine("");
