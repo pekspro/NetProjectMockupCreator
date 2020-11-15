@@ -12,6 +12,10 @@ namespace NetProjectMockupCreator
 {
     class Program
     {
+        const string ApplicationDirectoryName = "Application";
+        const string NuGetLibrariesDirectoryName = "NuGetLibraries";
+        const string NuGetPackagesDirectoryName = "NuGetPackages";
+
         static Task<int> Main(string[] args)
         {
             // args = $"--name fakeproject{DateTime.Now:HHmmss} --level-sizes 1 2 3 --path r:\\temp --line-count 6 --file-count 10 --nuget-level 3 --force".Split(' ');
@@ -159,12 +163,14 @@ namespace NetProjectMockupCreator
             path = Path.Combine(path, solutionName);
 
             Directory.CreateDirectory(path);
+            Directory.CreateDirectory(Path.Combine(path, ApplicationDirectoryName));
 
-            await WriteSolutionFileAsync(main, path, solutionName, false);
+            await WriteSolutionFileAsync(main, Path.Combine(path, ApplicationDirectoryName), solutionName, false);
 
             if(main.SomeHasNugetPackage)
             {
-                await WriteSolutionFileAsync(main, path, solutionName, true);
+                Directory.CreateDirectory(Path.Combine(path, NuGetLibrariesDirectoryName));
+                await WriteSolutionFileAsync(main, Path.Combine(path, NuGetLibrariesDirectoryName), solutionName, true);
             }
 
             await WriteProjectsAsync(main, path, solutionName, solutionName);
@@ -178,7 +184,7 @@ namespace NetProjectMockupCreator
         {
             string CreateEditFileList(Project proj)
             {
-                string s = "'./Main/MainClass.cs'";
+                string s = $"'{Path.Combine("./", ApplicationDirectoryName, "Main/MainClass.cs")}'";
 
                 while(proj.SubProject.Any())
                 {
@@ -189,15 +195,16 @@ namespace NetProjectMockupCreator
                         break;
                     }
 
-                    s += $", './{proj.Name}/LibClass0001.cs'";
+                    //s += $", './{proj.Name}/LibClass0001.cs'";
+                    s += $", '{Path.Combine("./", ApplicationDirectoryName, proj.Name, "LibClass0001.cs")}'";
                 }
 
                 return s;
             }
 
             string benchmarkFilename = Path.Combine(path, "benchmark.ps1");
-            string buildProjectName = $"./{solutionName}.sln";
-            string buildNugetProjectName = $"./{solutionName}-nuget.sln";
+            string buildProjectName = Path.Combine("./", ApplicationDirectoryName, $"{solutionName}.sln");
+            string buildNugetProjectName = Path.Combine("./", NuGetLibrariesDirectoryName, $"{solutionName}-nuget.sln");
 
             string filecontent = @$"Write-Output '{main.TotalNumberOfSubProjects} projects with {main.TotalNumberOfSubProjectSourceFiles} source files with {main.TotalNumberOfLinesOfCode} lines of code.'";
 
@@ -208,7 +215,7 @@ Write-Output '{main.TotalNumberOfNugetProjects} projects are NuGet packages and 
 Write-Output 'Building NuGet packages projects...'
 
 dotnet build {buildNugetProjectName} | Out-Null
-dotnet pack {buildNugetProjectName} --no-build --include-source --include-symbols --output LocalPackages
+dotnet pack {buildNugetProjectName} --no-build --include-source --include-symbols --output {NuGetPackagesDirectoryName}
 ";
             }
 
@@ -309,15 +316,15 @@ for ($i = 0; $i -lt $testTitles.Length; $i++) {{
                 return;
             }
 
-            string packageDir = Path.Combine(path, "LocalPackages");
+            string packageDir = Path.Combine(path, NuGetPackagesDirectoryName);
             Directory.CreateDirectory(packageDir);
 
             string solutionFilename = Path.Combine(path, "nuget.config");
 
-            string filecontent = @"<?xml version='1.0' encoding='utf-8'?>
+            string filecontent = @$"<?xml version='1.0' encoding='utf-8'?>
   <configuration>
     <packageSources>
-      <add key='LocalPackages' value='./LocalPackages' />
+      <add key='LocalPackages' value='./{NuGetPackagesDirectoryName}' />
     </packageSources>
     <activePackageSource>
       <!-- this tells that all of them are active -->
@@ -405,7 +412,7 @@ EndGlobal
 
         private static async Task WriteProjectsAsync(Project project, string basePath, string namespacePrefix, string solutionName)
         {
-            string projectPath = Path.Combine(basePath, project.Name);
+            string projectPath = Path.Combine(basePath, (project.IsNugetPackage ? NuGetLibrariesDirectoryName : ApplicationDirectoryName), project.Name);
 
             Directory.CreateDirectory(projectPath);
 
@@ -422,8 +429,6 @@ EndGlobal
             {
                 await WriteProjectsAsync(p, basePath, namespacePrefix + "." + p.Name, solutionName);
             }
-
-            
         }
 
         private static string GetClassName(int id)
